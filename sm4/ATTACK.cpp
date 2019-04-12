@@ -52,7 +52,7 @@ void ATTACK::sm4_one_round(u8 input[16],u8 fault,int round)
 					//printf("%x\n", inject);
 				//#endif
 				
-				ulbuf[i] = ulbuf[i] & inject;
+				ulbuf[i + 3] = ulbuf[i + 3] & inject;
 			}
 
 			ulbuf[i + 4] = sm4F(ulbuf[i], ulbuf[i + 1], ulbuf[i + 2], ulbuf[i + 3], sk[i]);
@@ -126,10 +126,17 @@ void ATTACK::test()
 		sm4_one_round(plaintxt + i * 16, fault[i], i);
 	}
 	//#ifdef _DEBUG
-	//	for (int i = 0; i < countn; i++) {
-	//		printf("%x %x\n", *(ciphertxt+2*i), *(ciphertxt + 2 * i + 1));
-	//	}
+		//for (int i = 0; i < countn; i++) {
+		//	printf("%x %x\n", *(ciphertxt+2*i), *(ciphertxt + 2 * i + 1));
+		//}
 	//#endif
+	
+	//u32 list[10];
+	//for (int i = 0; i < countn; i++) {
+	//	list[i]=ciphertxt[2 * i + 1] ^sm4Lt(ciphertxt[2*i]^truekey);
+	//	printf("%x\n", list[i]);
+	//}
+
 	u32 guessKey = getKey_Stream(ciphertxt, countn, truekey);
 	printf("trueKey=%x\n", truekey);
 	if (truekey == guessKey)cout << "find" << endl;

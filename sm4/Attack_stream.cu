@@ -40,7 +40,7 @@ using namespace std;
 
 #define  SHL(x,n) (((x) & 0xFFFFFFFF) << n)
 #define ROTL(x,n) (SHL((x),n) | ((x) >> (32 - n)))
-#define doublec(n) (n*n)
+#define doublec(n) (u32)(n*n)
 
 
 u8 SboxTable[256] = {
@@ -66,27 +66,30 @@ u8 SboxTable[256] = {
 /*(1024*2^14*256*1)*/
 /*限定故障注入在C31第一个字节*/
 /*ciphertxt[2 * n]=C32^C33^C34, ciphertxt[2 * n + 1]=C35    */
-__global__ void kernel(u32 *guessKey, u32 *maxSEI, u32 *ciphertxt, int countn,int i,u8 *Count,u8 *Sbox) {
+__global__ void kernel(u32 *guessKey, u32 *maxSEI, u32 *ciphertxt, int countn,int p,u8 *Count,u8 *Sbox) {
 	u32 ix = blockIdx.x*blockDim.x + threadIdx.x;
-	u32 key = (i<<10)+ix;
+	u32 key = (p<<16)+ix;
 
-	u32 MaxSei = 0;
-	u32 ka;
-	u8 a[4],b[4];
-	u8 ans=0;
-
+	u32 MaxSei = 0,ka;
+	u8 a=0x3f,b[4];
+	
 	for (int i = 0; i < countn; i++) {
-		ka = key ^ ciphertxt[2 * i];
-		PUT_ULONG_BE(ka, a, 0)
-		b[0] = Sbox[a[0]];
-		b[1] = Sbox[a[1]];
-		b[2] = Sbox[a[2]];
-		b[3] = Sbox[a[3]];
-		GET_ULONG_BE(ka, b, 0)
-		ans = b[0]^ b[3]^ (u8)(ka >> 6)^ (u8)(ka>> 14)^ (u8)(ka >> 22)^ (u8)(ciphertxt[2 * i + 1] >> 24);
-		Count[ix * 256 + ans]++;
+		u32 temp = ciphertxt[2 * i],temp1= ciphertxt[2 * i + 1];
+		ka = key ^ temp;
+		
+		b[0] = Sbox[(u8)(ka>>24)];
+		b[1] = Sbox[(u8)(ka>>16)];
+		b[2] = Sbox[(u8)(ka>>8)];
+		b[3] = Sbox[(u8)ka];
+
+		ka = ((u32)b[0] << 24) | ((u32)b[1] << 16) | ((u32)b[2] << 8) | ((u32)b[3]);
+		
+		b[0] = b[0] ^ b[3];
+		b[0] = b[0]^(u8)(ka >> 6) ^ (u8)(ka >> 14) ^ (u8)(ka >> 22) ^ (u8)(temp1>>24);
+		Count[b[0] * 65536 + ix]++;
 	}
-	for (int i = 0; i < 256; i++)MaxSei += doublec(Count[ix * 256 + i]);
+	for (int i = 0; i < 256; i++)
+		MaxSei += doublec(Count[i * 65536 + ix]);
 
 	guessKey[ix] = key;
 	maxSEI[ix] = MaxSei;
@@ -122,14 +125,14 @@ u32 getKey_Stream(u32 *ciphertxt0, int Countn, const u32 &trueKey) {
 	printf_s("using device %d : %s \n", dev, deviceProp.name);
 	CHECK(cudaSetDevice(dev));
 	//设置参数
-	int size_14 = 1 << 14;
+	int size_16 = 1 << 16;
 	int size_8 = 1 << 8;
-	int size_22 = 1 << 22;
-	int nsize = size_22 * Countn * sizeof(u8);
+	int size_24 = 1 << 24;
+	int nsize = size_16 * Countn * sizeof(u8);
 	//	printf_s("Matrix size:nx %d ny %d\n", nx, ny);
 
 	//以下为定义的线程布局gird=（256，65536）个block=（256,1）个threads
-	dim3 grid(size_14, 1);
+	dim3 grid(size_8, 1);
 	dim3 block(size_8, 1);
 	///////////////////////////////////////////////////////
 
@@ -144,49 +147,49 @@ u32 getKey_Stream(u32 *ciphertxt0, int Countn, const u32 &trueKey) {
 	u32 *maxSEI;
 	u32 *maxKey;
 	u8 *Count,*SBOX;
-	CHECK(cudaMalloc((void **)&maxSEI, nsize));
-	CHECK(cudaMalloc((void **)&maxKey, nsize));
-	CHECK(cudaMalloc((void **)&Count,size_22*256*sizeof(u8)));
+	CHECK(cudaMalloc((void **)&maxSEI, size_16 * sizeof(u32)));
+	CHECK(cudaMalloc((void **)&maxKey, size_16 * sizeof(u32)));
+	CHECK(cudaMalloc((void **)&Count,size_16*256*sizeof(u8)));
 	CHECK(cudaMalloc((void **)&SBOX,  256 * sizeof(u8)));
 
 	CHECK(cudaMemcpy(SBOX,SboxTable, 256 * sizeof(u8),cudaMemcpyHostToDevice));
 	//申请循环结果存放空间
 	u32 *ansSEI, *ansKEY;
-	CHECK(cudaMalloc((void **)&ansSEI, 1024*sizeof(u32)));
-	CHECK(cudaMalloc((void **)&ansKEY, 1024 * sizeof(u32)));
+	CHECK(cudaMalloc((void **)&ansSEI, size_16 * sizeof(u32)));
+	CHECK(cudaMalloc((void **)&ansKEY, size_16 * sizeof(u32)));
 
-	for (int i = 0; i < 1024; i++) {
-		CHECK(cudaMemset(Count,0,sizeof(Count)));
+
+	u32 ansS[65536] = { 0 }, ansK[65536] = { 0 }, aS = 0, aK;
+
+
+
+	for (int i = 0; i < size_16; i++) {
+		CHECK(cudaMemset(Count,0, size_16 * 256 * sizeof(u8)));
 		//调用核函数计算SEI
 		kernel << <grid, block >> > (maxKey,maxSEI,cipher,Countn,i,Count,SBOX);
 		CHECK(cudaDeviceSynchronize());//检查cuda设备同步情况
 		//调用核函数求SEI最大的key
 		getMaxSEI << <grid, block >> > (maxSEI,maxKey,ansSEI,ansKEY,i);
 		CHECK(cudaDeviceSynchronize());//检查cuda设备同步情况
+
+
 	}
 	
-	u32 *ansS, *ansK, aS=0, aK;
-	ansS = (u32*)malloc(1024 * sizeof(u32));
-	ansK = (u32*)malloc(1024 * sizeof(u32));
+
 
 	//拷贝结果到主机host
-	CHECK(cudaMemcpy(ansS, ansSEI, 1024 * sizeof(u32), cudaMemcpyDeviceToHost));
-	CHECK(cudaMemcpy(ansK, ansKEY, 1024 * sizeof(u32), cudaMemcpyDeviceToHost));
+	CHECK(cudaMemcpy(ansS, ansSEI, size_16 * sizeof(u32), cudaMemcpyDeviceToHost));
+	CHECK(cudaMemcpy(ansK, ansKEY, size_16 * sizeof(u32), cudaMemcpyDeviceToHost));
 
-	for (int i = 0; i < 1024; i++) {
+	for (int i = 0; i < 65536; i++) {
 		if (aS < ansS[i]) {
 			aS = ansS[i];
 			aK = ansK[i];
+			
 		}
 	}
-
-	free(ansS);
-	free(ansK);
-	printf("%d,%x", aS, aK);
-
-
-
-
+	
+	printf("%d %x\n", aS, aK);
 	//释放占用空间
 	CHECK(cudaFree(maxSEI));
 	CHECK(cudaFree(maxKey));
