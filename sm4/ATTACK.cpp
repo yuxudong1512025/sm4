@@ -95,14 +95,14 @@ void ATTACK::setRandPlaintxtAndFault(u32 seed)
 		break;
 	case faultmode::HalfZero:
 		for (int i = 0; i < countn; i++) {
-			if(rand()%100>50)
-				fault[i] = rand() * 1007 & 256;
+			if(rand()*1007%countn>countn/2)
+				fault[i] = rand() * 1007 % 256;
 			else fault[i] = 0;
 		}
 		break;
 	case faultmode::RandFault:
 		for (int i = 0; i < countn; i++) {
-			fault[i] = rand() * 1007 & 256;
+			fault[i] = rand() * 1007 % 256;
 		}
 		break;
 	default:
@@ -124,7 +124,10 @@ void ATTACK::test()
 	//#endif
 	for (int i = 0; i < countn; i++) {
 		sm4_one_round(plaintxt + i * 16, fault[i], i);
-	}
+		if (fault[i] != 0)
+			printf("0x%x ", fault[i]);
+		else printf("0x00 ");
+	}printf("\n");
 	//#ifdef _DEBUG
 		//for (int i = 0; i < countn; i++) {
 		//	printf("%x %x\n", *(ciphertxt+2*i), *(ciphertxt + 2 * i + 1));

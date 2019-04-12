@@ -109,7 +109,7 @@ __global__ void getMaxSEI(u32 *maxSEI, u32 *maxKey, u32 *SEIlist, u32 *KEYlist,i
 		}
 		__syncthreads();
 	}
-
+	__syncthreads();
 	if (it == 0) {
 		SEIlist[i] = maxSEI[it];
 		KEYlist[i] = maxKey[it];
@@ -169,9 +169,17 @@ u32 getKey_Stream(u32 *ciphertxt0, int Countn, const u32 &trueKey) {
 		kernel << <grid, block >> > (maxKey,maxSEI,cipher,Countn,i,Count,SBOX);
 		CHECK(cudaDeviceSynchronize());//检查cuda设备同步情况
 		//调用核函数求SEI最大的key
-		getMaxSEI << <grid, block >> > (maxSEI,maxKey,ansSEI,ansKEY,i);
-		CHECK(cudaDeviceSynchronize());//检查cuda设备同步情况
+		
 
+		if (i == trueKey >> 16) {
+			//拷贝结果到主机host
+			CHECK(cudaMemcpy(ansS, maxSEI, size_16 * sizeof(u32), cudaMemcpyDeviceToHost));
+			CHECK(cudaMemcpy(ansK, maxKey, size_16 * sizeof(u32), cudaMemcpyDeviceToHost));
+			printf("after 爆搜后的正确key的SEI：%d %x\n", ansS[trueKey & 0x0000FFFF], ansK[trueKey & 0x0000FFFF]);
+		}
+
+		getMaxSEI << <grid, block >> > (maxSEI, maxKey, ansSEI, ansKEY, i);
+		CHECK(cudaDeviceSynchronize());//检查cuda设备同步情况
 
 	}
 	
@@ -181,6 +189,7 @@ u32 getKey_Stream(u32 *ciphertxt0, int Countn, const u32 &trueKey) {
 	CHECK(cudaMemcpy(ansS, ansSEI, size_16 * sizeof(u32), cudaMemcpyDeviceToHost));
 	CHECK(cudaMemcpy(ansK, ansKEY, size_16 * sizeof(u32), cudaMemcpyDeviceToHost));
 
+	printf("after 分块合并后的正确key所在块的最大SEI及其对应Key：%d %x\n", ansS[trueKey >> 16], ansK[trueKey >> 16]);
 	for (int i = 0; i < 65536; i++) {
 		if (aS < ansS[i]) {
 			aS = ansS[i];
@@ -189,7 +198,7 @@ u32 getKey_Stream(u32 *ciphertxt0, int Countn, const u32 &trueKey) {
 		}
 	}
 	
-	printf("%d %x\n", aS, aK);
+	printf("最终找到的最大SEI和对应key：%d %x\n", aS, aK);
 	//释放占用空间
 	CHECK(cudaFree(maxSEI));
 	CHECK(cudaFree(maxKey));
