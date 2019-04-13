@@ -95,7 +95,7 @@ void ATTACK::setRandPlaintxtAndFault(u32 seed)
 		break;
 	case faultmode::HalfZero:
 		for (int i = 0; i < countn; i++) {
-			if(rand()*1007%countn>countn/2)
+			if(rand()*1007%100>50)
 				fault[i] = rand() * 1007 % 256;
 			else fault[i] = 0;
 		}

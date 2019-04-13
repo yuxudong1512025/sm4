@@ -1,7 +1,8 @@
 #include "cuda.h"
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
-
+#include"thrust/extrema.h"
+#include"thrust/device_vector.h"
 #include"pch.h"
 #include"sm4.h"
 
@@ -66,7 +67,7 @@ u8 SboxTable[256] = {
 /*(1024*2^14*256*1)*/
 /*限定故障注入在C31第一个字节*/
 /*ciphertxt[2 * n]=C32^C33^C34, ciphertxt[2 * n + 1]=C35    */
-__global__ void kernel(u32 *guessKey, u32 *maxSEI, u32 *ciphertxt, int countn,int p,u8 *Count,u8 *Sbox) {
+__global__ void kernel( u32 *maxSEI, u32 *ciphertxt, int countn,int p,u8 *Count,u8 *Sbox) {
 	u32 ix = blockIdx.x*blockDim.x + threadIdx.x;
 	u32 key = (p<<16)+ix;
 
@@ -91,33 +92,14 @@ __global__ void kernel(u32 *guessKey, u32 *maxSEI, u32 *ciphertxt, int countn,in
 	for (int i = 0; i < 256; i++)
 		MaxSei += doublec(Count[i * 65536 + ix]);
 
-	guessKey[ix] = key;
 	maxSEI[ix] = MaxSei;
 }
 
 
-__global__ void getMaxSEI(u32 *maxSEI, u32 *maxKey, u32 *SEIlist, u32 *KEYlist,int i) {//<<<(16384,1),(1024,1)>>>======<<<(256,1)(256,1)>>>
-	const u32 tid = threadIdx.x;
-	const u32 it = tid + blockIdx.x*blockDim.x;
-	for (int stride = blockDim.x *gridDim.x / 2; stride > 0; stride = stride >> 1) {
-		if (it < stride) {
-			if (maxSEI[it] < maxSEI[it + stride]) {
-				maxSEI[it] = maxSEI[it + stride];
-				maxKey[it] = maxKey[it + stride];
-			}
-			__syncthreads();
-		}
-		__syncthreads();
-	}
-	__syncthreads();
-	if (it == 0) {
-		SEIlist[i] = maxSEI[it];
-		KEYlist[i] = maxKey[it];
-	}
-}
-
 extern "C"
 u32 getKey_Stream(u32 *ciphertxt0, int Countn, const u32 &trueKey) {
+
+	FILE *fp = fopen("temp.txt", "a");
 	//输出设备信息可以无视
 	int dev = 0;
 	cudaDeviceProp deviceProp;
@@ -139,73 +121,61 @@ u32 getKey_Stream(u32 *ciphertxt0, int Countn, const u32 &trueKey) {
 	//申请device内存并将host的内存拷贝到device上（输入）
 	u32 *cipher;
 
-	
+
 	CHECK(cudaMalloc((void **)&cipher, Countn * 2 * sizeof(u32)));
 
 	CHECK(cudaMemcpy(cipher, ciphertxt0, Countn * 2 * sizeof(u32), cudaMemcpyHostToDevice));
 	//申请device内存作为输出空间（输出）
 	u32 *maxSEI;
-	u32 *maxKey;
-	u8 *Count,*SBOX;
+	u8 *Count, *SBOX;
 	CHECK(cudaMalloc((void **)&maxSEI, size_16 * sizeof(u32)));
-	CHECK(cudaMalloc((void **)&maxKey, size_16 * sizeof(u32)));
-	CHECK(cudaMalloc((void **)&Count,size_16*256*sizeof(u8)));
-	CHECK(cudaMalloc((void **)&SBOX,  256 * sizeof(u8)));
+	CHECK(cudaMalloc((void **)&Count, size_16 * 256 * sizeof(u8)));
+	CHECK(cudaMalloc((void **)&SBOX, 256 * sizeof(u8)));
 
-	CHECK(cudaMemcpy(SBOX,SboxTable, 256 * sizeof(u8),cudaMemcpyHostToDevice));
+	CHECK(cudaMemcpy(SBOX, SboxTable, 256 * sizeof(u8), cudaMemcpyHostToDevice));
 	//申请循环结果存放空间
-	u32 *ansSEI, *ansKEY;
-	CHECK(cudaMalloc((void **)&ansSEI, size_16 * sizeof(u32)));
-	CHECK(cudaMalloc((void **)&ansKEY, size_16 * sizeof(u32)));
 
-
+	thrust::device_vector<u32>ansSEI(size_16);
+	thrust::device_vector<u32>ansKEY(size_16);
 	u32 ansS[65536] = { 0 }, ansK[65536] = { 0 }, aS = 0, aK;
 
 
 
 	for (int i = 0; i < size_16; i++) {
-		CHECK(cudaMemset(Count,0, size_16 * 256 * sizeof(u8)));
+		CHECK(cudaMemset(Count, 0, size_16 * 256 * sizeof(u8)));
 		//调用核函数计算SEI
-		kernel << <grid, block >> > (maxKey,maxSEI,cipher,Countn,i,Count,SBOX);
+		kernel << <grid, block >> > (maxSEI, cipher, Countn, i, Count, SBOX);
 		CHECK(cudaDeviceSynchronize());//检查cuda设备同步情况
 		//调用核函数求SEI最大的key
-		
 
-		if (i == trueKey >> 16) {
-			//拷贝结果到主机host
-			CHECK(cudaMemcpy(ansS, maxSEI, size_16 * sizeof(u32), cudaMemcpyDeviceToHost));
-			CHECK(cudaMemcpy(ansK, maxKey, size_16 * sizeof(u32), cudaMemcpyDeviceToHost));
-			printf("after 爆搜后的正确key的SEI：%d %x\n", ansS[trueKey & 0x0000FFFF], ansK[trueKey & 0x0000FFFF]);
-		}
-
-		getMaxSEI << <grid, block >> > (maxSEI, maxKey, ansSEI, ansKEY, i);
-		CHECK(cudaDeviceSynchronize());//检查cuda设备同步情况
+		auto ptr = thrust::max_element(thrust::device, maxSEI, maxSEI + 65536);
+		ansSEI[i] = (*ptr);
+		ansKEY[i] = ptr - maxSEI;
 
 	}
+	//thrust::host_vector<u32> host(65536),host2(65536);
+	//thrust::copy(ansSEI.begin(), ansSEI.end(), host.begin());
+	//thrust::copy(ansKEY.begin(), ansKEY.end(), host2.begin());
+	//for (int i = 0; i < 65536; i++) {
+	//	std::fprintf(fp, "%d %x\n", host[i],host2[i]);
+	//}
+
+	auto ptr = thrust::max_element(ansSEI.begin(), ansSEI.end());
+
+	//输出结果用的
+	thrust::device_vector<u32> D(2);
+	thrust::host_vector<u32> H(2);
+	D[0]=(*ptr);
+	D[1]=(((ptr - ansSEI.begin()) << 16) + ansKEY[ptr - ansSEI.begin()]);
 	
+	thrust::copy(D.begin(), D.end(), H.begin());
 
-
-	//拷贝结果到主机host
-	CHECK(cudaMemcpy(ansS, ansSEI, size_16 * sizeof(u32), cudaMemcpyDeviceToHost));
-	CHECK(cudaMemcpy(ansK, ansKEY, size_16 * sizeof(u32), cudaMemcpyDeviceToHost));
-
-	printf("after 分块合并后的正确key所在块的最大SEI及其对应Key：%d %x\n", ansS[trueKey >> 16], ansK[trueKey >> 16]);
-	for (int i = 0; i < 65536; i++) {
-		if (aS < ansS[i]) {
-			aS = ansS[i];
-			aK = ansK[i];
-			
-		}
-	}
-	
-	printf("最终找到的最大SEI和对应key：%d %x\n", aS, aK);
+	std::printf("最终找到的最大SEI和对应key：%d %x\n", H[0], H[1]);
 	//释放占用空间
 	CHECK(cudaFree(maxSEI));
-	CHECK(cudaFree(maxKey));
 	CHECK(cudaFree(cipher));
 	CHECK(cudaFree(Count));
-	CHECK(cudaFree(ansSEI));
 	CHECK(cudaFree(SBOX));
-	CHECK(cudaFree(ansKEY));
-	return aK;
+
+	return H[1];
 }
