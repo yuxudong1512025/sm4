@@ -40,6 +40,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <CudaCompile Include="Attack_stream.cu" />
+    <CudaCompile Include="attack.cu" />
   </ItemGroup>
 </Project>

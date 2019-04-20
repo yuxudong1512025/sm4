@@ -170,7 +170,7 @@
     <ClCompile Include="sm4.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <CudaCompile Include="Attack_stream.cu" />
+    <CudaCompile Include="attack.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
